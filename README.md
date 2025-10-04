@@ -37,3 +37,10 @@ Our solution integrates **Machine Learning**, **real-time weather data**, and **
 | **Data Handling** | NumPy, Pandas |
 | **APIs** | OpenWeatherMap |
 | **Visualization** | Leaflet.js |
+
+
+
+Sample Output :
+
+![Sample Output](https://github.com/user-attachments/assets/aa63706e-5b56-4651-89ed-14c7d1e03668)
+
