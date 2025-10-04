@@ -3,7 +3,6 @@
 
 ![React](https://img.shields.io/badge/Frontend-React.js-blue)
 ![Python](https://img.shields.io/badge/Backend-Flask-green)
-![AI](https://img.shields.io/badge/Artificial%20Intelligence-Enabled-orange)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
 ---
@@ -14,13 +13,12 @@ Traditional GPS-based routes often ignore real-time weather, sea currents, and t
 
 Our solution integrates **Machine Learning**, **real-time weather data**, and **interactive geospatial visualization** to compute and display **three intelligent route paths**:
 - 🔵 **Blue:** Straight GPS route (shortest path, often unrealistic)
-- 🟠 **Orange:** Land-aware route (avoids coastlines and islands)
 - 🟢 **Green:** AI-optimized route (balances weather safety, fuel efficiency, and distance)
 
 ---
 
 ## 🚀 Key Features
-- 🧠 **AI-Powered Route Optimization** — Calculates the best possible sea route using ML predictions based on live oceanic and meteorological data.  
+- 🧠 **ML-Powered Route Optimization** — Calculates the best possible sea route using ML predictions based on live oceanic and meteorological data.  
 - 🌦️ **Weather Visualization** — Integrates OpenWeatherMap layers to display wind and cloud coverage.  
 - 🗺️ **Interactive Map Interface** — Built using React-Leaflet for real-time, multi-route visualization.  
 - ⚡ **Dynamic Route Updates** — Monitors changing conditions and updates paths automatically.  
