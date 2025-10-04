@@ -59,8 +59,6 @@ export default function App() {
     const [isStarted, setIsStarted] = useState(false);
     const [isPanelOpen, setIsPanelOpen] = useState(true);
 
-    const bounds = useMemo(() => ({ lat_min: -40, lat_max: 30, lon_min: 20, lon_max: 120 }), []);
-
     const checkSystemHealth = useCallback(async () => {
         try {
             const health = await fetchHealthStatus();
@@ -111,14 +109,13 @@ export default function App() {
         if (!start || !end) return;
         setLoading(true); setError(null);
         try {
-            const res = await fetchRoute(start, end, { step_deg: gridStep, bounds });
+            const res = await fetchRoute(start, end, { step_deg: gridStep });
             setCurrentRouteId(res.route_id);
             setPathHistory(res.path_history || []);
             setDistance(res.distance_km.toFixed(1));
             setRouteDetails(res.route_details || []);
             setMonitoringEnabled(true);
             
-            // NEW: Update the UI dropdown to match the grid step used by the backend
             if (res.grid_step_used) {
                 setGridStep(res.grid_step_used);
             }
@@ -128,7 +125,7 @@ export default function App() {
                 fetchRouteWeather(currentPath);
             }
         } catch (e) { setError(e.message) } finally { setLoading(false) }
-    }, [start, end, gridStep, bounds, systemStatus.weather_api, fetchRouteWeather]);
+    }, [start, end, gridStep, systemStatus.weather_api, fetchRouteWeather]);
     
     const forceUpdate = useCallback(async () => {
         if (!currentRouteId) return;
@@ -147,11 +144,8 @@ export default function App() {
     
     const clearRoute = async () => {
         if (currentRouteId) {
-            try {
-                await deleteRoute(currentRouteId);
-            } catch (e) {
-                console.error("Failed to clear route on backend:", e.message);
-            }
+            try { await deleteRoute(currentRouteId); } 
+            catch (e) { console.error("Failed to clear route on backend:", e.message); }
         }
         setStart(null); setEnd(null); setPathHistory([]); setDistance(null);
         setCurrentRouteId(null); setRouteDetails([]); setMonitoringEnabled(false);

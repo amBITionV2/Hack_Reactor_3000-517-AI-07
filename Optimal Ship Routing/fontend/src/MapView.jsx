@@ -1,24 +1,19 @@
 import React, { useEffect } from 'react';
-import { MapContainer, TileLayer, Polyline, Marker, useMapEvents, LayersControl, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, Marker, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
+import { indianPorts } from './ports';
 
-// Helper component to resize the map when the sidebar toggles
+// --- Helper component to resize the map ---
 function MapResizer({ isPanelOpen }) {
   const map = useMap();
   useEffect(() => {
-    // Wait for the sidebar transition to finish before resizing
-    const timer = setTimeout(() => {
-      map.invalidateSize();
-    }, 500); // This duration should match the CSS transition in App.jsx
-
+    const timer = setTimeout(() => map.invalidateSize(), 500);
     return () => clearTimeout(timer);
   }, [isPanelOpen, map]);
-
   return null;
 }
 
-const { BaseLayer, Overlay } = LayersControl;
-
+// --- Component to handle general map clicks ---
 function ClickToSet({ onSet }) {
   useMapEvents({
     click(e) {
@@ -29,21 +24,37 @@ function ClickToSet({ onSet }) {
   return null;
 }
 
-const markerIcon = new L.Icon({
+// --- Custom Icons ---
+const defaultMarkerIcon = new L.Icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
   iconSize: [25, 41],
   iconAnchor: [12, 41]
 });
 
-export default function MapView({ start, end, setStart, setEnd, pathHistory, gridStep, setGridStep, isPanelOpen }) {
-  const windLayer = `https://tile.openweathermap.org/map/wind/{z}/{x}/{y}.png?appid=81da745c6171d7297c8d6943dd0d240e`;
-  const clouds = `https://tile.openweathermap.org/map/clouds/{z}/{x}/{y}.png?appid=81da745c6171d7297c8d6943dd0d240e`;
+const portIcon = new L.Icon({
+    iconUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzAwNTZhYSIgd2lkdGg9IjM2cHgiIGhlaWdodD0iMzZweCI+PHBhdGggZD0iTTAgMGgyNHYyNEgweiIgZmlsbD0ibm9uZSIvPjxwYXRoIGQ9Ik0xMCA0YzAtMi4yMSAyLjU5LTQgNC00czQgMS43OSA0IDRjMCAyLjQyLTIuNzIgMy41MS00IDQuODEtMS4yOC0xLjMtNC0yLjM5LTQtNC44MXpNMjAgNmgtMnYySDRWM0gydjJoMlYzaDR2MmgyVjNoMnY0aDRWM2gyVjJoLTJWNWgyVjJoLTJWNWgyVjNoLTJWMmgtMnYxaC0yVjNoLTJ2MmgtMnY0aDRjMSAwaDIgMCAyLTF2LTR6TTE4IDEyYy0xLjY4IDAtMy4wNCAxLjEyLTMuNzkgMi42Ny0uMTYuMzEtLjIuNjQtLjIxLjk3SDl2Mmg4djJoLTJWMTZoLTR2LTJoLTJ2MmgtMnYyaDR2MmgydjJoMnYtMmMzLjM0IDAgNi0yLjY2IDYtNnMtMi42Ni02LTYtNnptMCA4aC0ycy0uNTYtMy40NS0yLTMuNDVTMTEuNDYgMjAgMTEuNDYgMjBIMTAuNWMtLjQ4LTIuNzEtMi4yNS01LTUuNS01IDAgMCAxLjM0LTYgNS41LTZTMTggMTIgMTggMTJ6Ii8+PC9zdmc+',
+    iconSize: [32, 32],
+    iconAnchor: [16, 32],
+    popupAnchor: [0, -32]
+});
 
-  // Derive current and historical paths from the pathHistory prop
-  const currentPath = pathHistory.length > 0 ? pathHistory[pathHistory.length - 1] : null;
-  const historicalPaths = pathHistory.length > 1 ? pathHistory.slice(0, -1) : [];
+const waypointIcon = new L.divIcon({
+  className: 'waypoint-marker',
+  iconSize: [10, 10]
+});
+
+// --- MapView Component ---
+export default function MapView({ start, end, setStart, setEnd, pathHistory, isPanelOpen }) {
+  const windLayer = `https://tile.openweathermap.org/map/wind/{z}/{x}/{y}.png?appid=81da745c6171d7c8d6943dd0d240e`;
+
+  const currentPath = pathHistory.length > 0 ? pathHistory[pathHistory.length - 1] : [];
+  
+  const handlePointSelect = (point) => {
+    if (!start) setStart(point);
+    else if (!end) setEnd(point);
+    else { setStart(point); setEnd(null); }
+  };
 
   return (
     <MapContainer
@@ -51,78 +62,59 @@ export default function MapView({ start, end, setStart, setEnd, pathHistory, gri
       zoom={5}
       style={{ height: "100vh", width: "100%" }}
       scrollWheelZoom={true}
-      maxBounds={[[-40, 40], [40, 120]]}
-      maxBoundsViscosity={1.0}
     >
       <MapResizer isPanelOpen={isPanelOpen} />
 
-      <LayersControl position="topright">
-          <BaseLayer checked name="OSM">
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          </BaseLayer>
-          <Overlay checked name="Wind">
-              <TileLayer url={windLayer} opacity={0.5} />
-          </Overlay>
-          <Overlay name="Clouds">
-              <TileLayer url={clouds} opacity={0.7} />
-          </Overlay>
-      </LayersControl>
+      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <TileLayer url={windLayer} opacity={0.5} />
 
-      <ClickToSet onSet={(pt) => {
-        if (!start) setStart(pt);
-        else if (!end) setEnd(pt);
-        else { setStart(pt); setEnd(null); }
-      }} />
+      <ClickToSet onSet={handlePointSelect} />
 
-      {start && <Marker position={start} icon={markerIcon} />}
-      {end && <Marker position={end} icon={markerIcon} />}
+      {/* Render selectable port markers */}
+      {indianPorts.map(port => (
+        <Marker 
+          key={port.name} 
+          position={[port.lat, port.lng]} 
+          icon={portIcon}
+          eventHandlers={{ click: (e) => {
+            L.DomEvent.stopPropagation(e);
+            handlePointSelect([port.lat, port.lng]);
+          }}}
+        >
+          <Tooltip>{port.name}</Tooltip>
+        </Marker>
+      ))}
+
+      {/* Render start and end markers */}
+      {start && <Marker position={start} icon={defaultMarkerIcon} />}
+      {end && <Marker position={end} icon={defaultMarkerIcon} />}
 
       {start && end && (
         <>
-          {/* Direct GPS Path */}
           <Polyline positions={[start, end]} pathOptions={{ color: "blue", weight: 2, dashArray: "5, 10" }} />
           
-          {/* Historical Paths */}
-          {historicalPaths.map((histPath, index) => (
-            <Polyline
-              key={`hist-${index}`}
-              positions={[start, ...histPath, end]}
-              pathOptions={{ color: "#6c757d", weight: 3, opacity: 0.7, dashArray: "1, 10" }}
-            />
-          ))}
-
-          {/* Current Optimized Path */}
-          {currentPath && (
+          {currentPath.length > 0 && (
             <Polyline 
-              key="current"
+              // --- THIS IS THE FIX ---
+              // The path now correctly includes the start and end points.
               positions={[start, ...currentPath, end]}
-              pathOptions={{ color: "green", weight: 5 }} 
+              pathOptions={{ color: "#28a745", weight: 5 }} 
             />
           )}
+
+          {currentPath.map((point, index) => (
+            <Marker key={`wp-${index}`} position={point} icon={waypointIcon}>
+              <Tooltip>Waypoint {index + 1}</Tooltip>
+            </Marker>
+          ))}
         </>
       )}
-      
-      <div className="leaflet-bottom leaflet-right" style={{ padding: 8, pointerEvents: 'auto' }}>
-        <div style={{ background: 'white', padding: 8, borderRadius: 8, boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}>
-          <div><strong>Click map:</strong> start → end</div>
-          <div>Grid step (deg): 
-            <select value={gridStep} onChange={(e) => setGridStep(parseFloat(e.target.value))}>
-              <option value={0.5}>0.5</option>
-              <option value={0.25}>0.25</option>
-              <option value={0.1}>0.1</option>
-            </select>
-          </div>
-        </div>
-      </div>
       
       <div className="leaflet-bottom leaflet-left" style={{ padding: 8, pointerEvents: 'auto' }}>
         <div style={{ background: "white", padding: 6, borderRadius: 6, fontSize: 12, boxShadow: "0 2px 6px rgba(0,0,0,0.3)" }}>
           <div><span style={{color:"blue"}}>▬</span> GPS Route</div>
-          {historicalPaths.length > 0 && (
-            <div><span style={{color:"#6c757d", letterSpacing: '-1px'}}>▬ ▬</span> Previous Route</div>
-          )}
-          {currentPath && (
-            <div><span style={{color:"green"}}>▬</span> Current Optimized Route</div>
+          {currentPath.length > 0 && (
+            <div><span style={{color:"#28a745"}}>▬</span> Current Optimized Route</div>
           )}
         </div>
       </div>

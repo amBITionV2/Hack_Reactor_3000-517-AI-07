@@ -12,3 +12,10 @@ body, html, #root {
 * {
   box-sizing: border-box;
 }
+/* Add this at the end of your global.css file */
+.waypoint-marker {
+  background-color: #007bff;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 5px rgba(0,0,0,0.5);
+}
