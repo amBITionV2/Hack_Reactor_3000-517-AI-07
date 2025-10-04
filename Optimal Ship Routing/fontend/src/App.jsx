@@ -1,9 +1,53 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import MapView from './MapView';
 import { deleteRoute, fetchRoute, fetchRouteStatus, forceRouteUpdate, fetchWeather, fetchPrediction, fetchHealthStatus } from './api';
 import LandingPage from './LandingPage';
 import RouteMonitor from './RouteMonitor';
 import WeatherPanel from './WeatherPanel';
+
+// --- ADDED: Voyage Summary Component ---
+const VoyageSummaryBar = ({ summary }) => {
+  if (!summary) return null;
+
+  const summaryStyle = {
+    position: 'absolute',
+    top: '20px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 1001,
+    background: 'rgba(255, 255, 255, 0.9)',
+    padding: '8px 16px',
+    borderRadius: '8px',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+    display: 'flex',
+    gap: '24px',
+    fontSize: '14px',
+    fontWeight: 600,
+    color: '#343a40'
+  };
+
+  const itemStyle = { textAlign: 'center' };
+  const valueStyle = { color: '#007bff', display: 'block', fontSize: '16px' };
+  const labelStyle = { fontSize: '11px', textTransform: 'uppercase', color: '#6c757d' };
+
+  return (
+    <div style={summaryStyle}>
+      <div style={itemStyle}>
+        <span style={valueStyle}>{summary.total_time_hours.toFixed(1)}</span>
+        <span style={labelStyle}>Total Hours</span>
+      </div>
+      <div style={itemStyle}>
+        <span style={valueStyle}>{summary.total_fuel_liters.toLocaleString(undefined, {maximumFractionDigits: 0})}</span>
+        <span style={labelStyle}>Total Fuel (L)</span>
+      </div>
+      <div style={itemStyle}>
+        <span style={valueStyle}>{summary.average_speed_kts.toFixed(1)}</span>
+        <span style={labelStyle}>Avg. Speed (kts)</span>
+      </div>
+    </div>
+  );
+};
+
 
 const SidebarPlaceholder = () => {
     const Feature = ({ icon, title, description }) => (
@@ -58,6 +102,8 @@ export default function App() {
     const [systemStatus, setSystemStatus] = useState({ ml_model: false, weather_api: false });
     const [isStarted, setIsStarted] = useState(false);
     const [isPanelOpen, setIsPanelOpen] = useState(true);
+    // ADDED: New state for the voyage summary
+    const [voyageSummary, setVoyageSummary] = useState(null);
 
     const checkSystemHealth = useCallback(async () => {
         try {
@@ -107,7 +153,10 @@ export default function App() {
 
     const computeRoute = useCallback(async () => {
         if (!start || !end) return;
-        setLoading(true); setError(null);
+        setLoading(true); 
+        setError(null);
+        // ADDED: Clear previous summary
+        setVoyageSummary(null);
         try {
             const res = await fetchRoute(start, end, { step_deg: gridStep });
             setCurrentRouteId(res.route_id);
@@ -115,6 +164,8 @@ export default function App() {
             setDistance(res.distance_km.toFixed(1));
             setRouteDetails(res.route_details || []);
             setMonitoringEnabled(true);
+            // ADDED: Set new summary data from API response
+            setVoyageSummary(res.voyage_summary || null);
             
             if (res.grid_step_used) {
                 setGridStep(res.grid_step_used);
@@ -150,6 +201,8 @@ export default function App() {
         setStart(null); setEnd(null); setPathHistory([]); setDistance(null);
         setCurrentRouteId(null); setRouteDetails([]); setMonitoringEnabled(false);
         setRouteUpdates([]); setMlPrediction(null); setWeatherData({}); setError(null);
+        // ADDED: Clear summary data
+        setVoyageSummary(null);
     };
     
     const getPredictionForPoint = useCallback(async (lat, lon) => {
@@ -182,6 +235,10 @@ export default function App() {
                         pathHistory={pathHistory}
                         gridStep={gridStep} setGridStep={setGridStep}
                     />
+                    
+                    {/* ADDED: Render the summary bar */}
+                    <VoyageSummaryBar summary={voyageSummary} />
+
                     <div style={{ position: 'absolute', zIndex: 1000, bottom: 20, left: '50%', transform: 'translateX(-50%)', background: 'white', padding: 16, borderRadius: 12, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', gap: 10, minWidth: 450 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-around', fontSize: 14 }}>
                             <div><strong>Start:</strong> {start ? start.map(n => n.toFixed(3)).join(', ') : 'Click on map'}</div>
@@ -207,19 +264,43 @@ export default function App() {
                         {!currentRouteId && !loading && <SidebarPlaceholder />}
                         {currentRouteId && (<RouteMonitor routeId={currentRouteId} updates={routeUpdates} monitoringEnabled={monitoringEnabled} onToggleMonitoring={setMonitoringEnabled} />)}
                         {(Object.keys(weatherData).length > 0 || mlPrediction) && (<WeatherPanel weatherData={weatherData} mlPrediction={mlPrediction} systemStatus={systemStatus} />)}
+                        
                         {routeDetails.length > 0 && (
                             <div style={{ padding: '16px', borderTop: '1px solid #dee2e6', backgroundColor: '#fff', flexGrow: 1 }}>
-                                <h6 style={{ margin: '0 0 12px 0', fontSize: 15, fontWeight: 600, color: '#343a40' }}>Route Waypoints ({routeDetails.length})</h6>
-                                {routeDetails.map((point, i) => (
-                                    <div key={i} style={{ fontSize: 13, marginBottom: 8, padding: '10px 12px', backgroundColor: '#f8f9fa', borderRadius: 8, border: '1px solid #e9ecef' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <strong style={{ color: '#007bff' }}>Waypoint {i + 1}</strong>
-                                            <span style={{ fontSize: 12, color: '#6c757d' }}>{point.lat.toFixed(3)}, {point.lon.toFixed(3)}</span>
-                                        </div>
-                                        <div style={{ marginTop: 4, fontSize: 12 }}><span>Distance: <strong>{point.distance_from_start?.toFixed(1)} km</strong></span></div>
-                                        {point.conditions && Object.keys(point.conditions).length > 0 && (<div style={{ marginTop: 6, fontSize: 11, color: '#6c757d', borderTop: '1px dashed #dee2e6', paddingTop: 6 }}>Wind: {point.conditions.wind_speed?.toFixed(1)} kts, Waves: {point.conditions.wave_height?.toFixed(1)}m</div>)}
-                                    </div>
-                                ))}
+                                <h6 style={{ margin: '0 0 12px 0', fontSize: 15, fontWeight: 600, color: '#343a40' }}>
+                                    📍 Route Waypoints ({routeDetails.length})
+                                </h6>
+                                <div style={{ maxHeight: 'calc(100vh - 500px)', overflowY: 'auto', paddingRight: 8 }}>
+                                    {routeDetails.map((point, i) => {
+                                        const { conditions } = point;
+                                        const formatStat = (value, unit, decimals = 1) => 
+                                            (value == null || isNaN(value)) ? 'N/A' : `${value.toFixed(decimals)}${unit}`;
+
+                                        return (
+                                            <div key={i} style={{ fontSize: 13, marginBottom: 8, padding: '10px 12px', backgroundColor: '#f8f9fa', borderRadius: 8, border: '1px solid #e9ecef' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                                    <strong style={{ color: '#007bff' }}>Waypoint {i + 1}</strong>
+                                                    <span style={{ fontSize: 12, color: '#6c757d' }}>{point.lat.toFixed(3)}, {point.lon.toFixed(3)}</span>
+                                                </div>
+                                                <div style={{ marginBottom: 8, fontSize: 12 }}>
+                                                    <span>Distance: <strong>{point.distance_from_start?.toFixed(1)} km</strong></span>
+                                                </div>
+                                                {conditions && (
+                                                    <div style={{
+                                                        paddingTop: 8, borderTop: '1px solid #e9ecef', display: 'grid',
+                                                        gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 12, color: '#495057'
+                                                    }}>
+                                                        <span>💨 Wind: <strong>{formatStat(conditions.wind_speed, ' kts')}</strong></span>
+                                                        <span>🌊 Waves: <strong>{formatStat(conditions.wave_height, 'm')}</strong></span>
+                                                        <span>👁️ Vis: <strong>{formatStat(conditions.visibility, ' km')}</strong></span>
+                                                        <span>🚢 Speed: <strong>{formatStat(conditions.predicted_speed, ' kts')}</strong></span>
+                                                        <span style={{ gridColumn: 'span 2' }}>⛽ Fuel: <strong>{formatStat(conditions.predicted_fuel, ' L/hr')}</strong></span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </div>
                         )}
                     </div>

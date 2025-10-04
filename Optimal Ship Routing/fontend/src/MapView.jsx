@@ -46,7 +46,7 @@ const waypointIcon = new L.divIcon({
 
 // --- MapView Component ---
 export default function MapView({ start, end, setStart, setEnd, pathHistory, isPanelOpen }) {
-  const windLayer = `https://tile.openweathermap.org/map/wind/{z}/{x}/{y}.png?appid=81da745c6171d7c8d6943dd0d240e`;
+  const windLayer = `https://tile.openweathermap.org/map/wind/{z}/{x}/{y}.png?appid=d84726c9fdd20ad8ea1528c84e0def03`;
 
   const currentPath = pathHistory.length > 0 ? pathHistory[pathHistory.length - 1] : [];
   
