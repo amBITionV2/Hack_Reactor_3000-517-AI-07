@@ -10,6 +10,23 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- ADDED: Rate Limiter ---
+# This class ensures we don't make more than ~1 call per second to respect free tier limits.
+class RateLimiter:
+    def __init__(self, requests_per_minute: int):
+        self.interval = 60.0 / requests_per_minute
+        self.last_call_time = 0
+
+    def wait(self):
+        elapsed = time.time() - self.last_call_time
+        if elapsed < self.interval:
+            time.sleep(self.interval - elapsed)
+        self.last_call_time = time.time()
+
+# Create a single rate limiter instance for the OpenWeatherMap API
+openweathermap_limiter = RateLimiter(requests_per_minute=55) # Stay safely under the 60/min limit
+
+
 class WeatherOceanAPI:
     """
     Client for fetching real-time weather and ocean data from multiple sources.
@@ -17,11 +34,10 @@ class WeatherOceanAPI:
     """
     
     def __init__(self, openweather_api_key: str, noaa_api_key: Optional[str] = None):
-        self.openweather_key = "81da745c6171d7297c8d6943dd0d240e"
+        self.openweather_key = "778c1921fa85a34adbe226e280cbf4e6"
         self.noaa_key = "aMHBDRQYVPPLpGvYnBpgASJrwBYlxYhG"
         self.base_urls = {
             'openweather': 'https://api.openweathermap.org/data/2.5',
-            # FIXED: Changed from 'openweather_marine' to a direct base URL for clarity
             'marine_weather': 'https://api.worldweatheronline.com/v1/marine.ashx'
         }
         
@@ -38,6 +54,9 @@ class WeatherOceanAPI:
         retries = 3
         for attempt in range(retries):
             try:
+                # ADDED: Wait before making the call to respect rate limits
+                openweathermap_limiter.wait()
+                
                 response = requests.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
@@ -64,26 +83,24 @@ class WeatherOceanAPI:
         compatible with the Free API plan.
         """
         try:
-            # FIXED: Changed URL from '/onecall' to '/forecast' to match Free plan
             url = f"{self.base_urls['openweather']}/forecast"
             params = {
                 'lat': lat,
                 'lon': lon,
                 'appid': self.openweather_key,
                 'units': 'metric',
-                # FIXED: Removed 'exclude' parameter which is not valid for this endpoint
             }
             
+            # ADDED: Wait before making the call to respect rate limits
+            openweathermap_limiter.wait()
+
             response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
             
             forecast = []
             
-            # FIXED: Updated loop to process the '/forecast' API response structure
-            # The data is in a 'list' of 3-hour intervals
             for forecast_item in data.get('list', []):
-                # Stop if we have enough forecast hours
                 if len(forecast) * 3 >= hours:
                     break
                 
@@ -226,7 +243,7 @@ def fetch_region_conditions(api, bounds, step=5):
     return conditions_list
 
 if __name__ == "__main__":
-    api = WeatherOceanAPI(openweather_api_key="81da745c6171d7297c8d6943dd0d240e")
+    api = WeatherOceanAPI(openweather_api_key="778c1921fa85a34adbe226e280cbf4e6")
     
     test_lat, test_lon = 12.0, 80.0
     conditions = api.get_complete_conditions(test_lat, test_lon)

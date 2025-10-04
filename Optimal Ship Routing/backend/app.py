@@ -12,6 +12,7 @@ from heapq import heappush, heappop
 
 from shapely.geometry import Point
 import cartopy.feature as cfeature
+from shapely.prepared import prep
 
 # Import custom modules
 from ml_model import ShipPerformancePredictor
@@ -24,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Configuration & Global Variables ---
-OPENWEATHER_API_KEY = "81da745c6171d7297c8d6943dd0d240e"
+OPENWEATHER_API_KEY = "778c1921fa85a34adbe226e280cbf4e6"
 ML_MODEL_PATH = 'models/ship_performance_model'
 RECOMPUTE_INTERVAL = 15 * 60
 
@@ -34,8 +35,11 @@ active_routes, shutdown_flag = {}, False
 # --- Geospatial & Route Utilities ---
 R_EARTH_KM = 6371.0088
 NEIGHBOR_OFFSETS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-land_feature = cfeature.NaturalEarthFeature('physical', 'land', '110m')
-land_geometries = list(land_feature.geometries())
+logger.info("Loading and preparing land geometries...")
+land_feature = cfeature.NaturalEarthFeature('physical', 'land', '50m')
+prepared_land_geometries = [prep(geom) for geom in land_feature.geometries()]
+logger.info("Land geometries are ready.")
+
 
 def haversine_km(a, b):
     lat1, lon1 = map(math.radians, a); lat2, lon2 = map(math.radians, b)
@@ -45,7 +49,7 @@ def haversine_km(a, b):
 
 def is_land(lat, lon):
     point = Point(lon, lat)
-    return any(poly.contains(point) for poly in land_geometries)
+    return any(p.contains(point) for p in prepared_land_geometries)
 
 def get_navigational_hazard_penalty(lat, lon):
     palk_strait_box = [9.0, 10.5, 78.8, 80.5]
@@ -90,8 +94,17 @@ def get_ml_speed_penalty(lat, lon):
     if not ml_predictor or not weather_api: return 0.0
     try:
         conditions = get_cached_weather(weather_api, lat, lon)
-        features = np.array([[conditions.get('wind_speed', 10), conditions.get('wind_direction', 180), conditions.get('wave_height', 2), conditions.get('wave_period', 8), conditions.get('current_speed', 0.5), conditions.get('current_direction', 90), conditions.get('sea_temp', 22), conditions.get('air_temp', 20), conditions.get('pressure', 1013), conditions.get('visibility', 10), 180, 12]])
-        prediction = ml_predictor.predict(features)
+        features_list = [
+            conditions.get('wind_speed', 10), conditions.get('wind_direction', 180),
+            conditions.get('wave_height', 2), conditions.get('wave_period', 8),
+            conditions.get('current_speed', 0.5), conditions.get('current_direction', 90),
+            conditions.get('sea_temp', 22), conditions.get('air_temp', 20),
+            conditions.get('pressure', 1013), conditions.get('visibility', 10),
+            180, 12
+        ]
+        features_sequence = np.tile(features_list, (10, 1))
+        prediction = ml_predictor.predict(features_sequence)
+        
         speed_penalty = max(0, (12.0 - prediction['speed']) * 2.0)
         fuel_penalty = max(0, (prediction['fuel_consumption'] - 25.0) * 0.1)
         return speed_penalty + fuel_penalty
@@ -105,45 +118,112 @@ def cost_penalty(lat, lon, conditions=None):
         return hazard_penalty
     return get_environmental_penalty(lat, lon, conditions) + get_ml_speed_penalty(lat, lon)
 
-# --- A* Routing Algorithm ---
+# --- NEW: Helper function for summary calculations ---
+def calculate_voyage_summary(route_details, total_distance_km):
+    if len(route_details) < 2:
+        return None
+    
+    total_time_hours = 0
+    total_fuel_liters = 0
+    
+    for i in range(1, len(route_details)):
+        p1 = route_details[i-1]
+        p2 = route_details[i]
+        
+        segment_dist = haversine_km((p1['lat'], p1['lon']), (p2['lat'], p2['lon']))
+        
+        avg_speed_kts = (p1['conditions'].get('predicted_speed', 12) + p2['conditions'].get('predicted_speed', 12)) / 2
+        avg_fuel_lph = (p1['conditions'].get('predicted_fuel', 0) + p2['conditions'].get('predicted_fuel', 0)) / 2
+        
+        avg_speed_kmh = avg_speed_kts * 1.852
+        
+        if avg_speed_kmh > 0:
+            segment_time_hours = segment_dist / avg_speed_kmh
+            total_time_hours += segment_time_hours
+            total_fuel_liters += segment_time_hours * avg_fuel_lph
+
+    average_speed_kts = (total_distance_km / 1.852) / total_time_hours if total_time_hours > 0 else 0
+    
+    return {
+        "total_time_hours": total_time_hours,
+        "total_fuel_liters": total_fuel_liters,
+        "average_speed_kts": average_speed_kts
+    }
+
 def astar_route_with_conditions(grid, start_ll, end_ll):
     start, goal = grid.to_cell(*start_ll), grid.to_cell(*end_ll)
-    g, parent, route_conditions = {start: 0.0}, {start: None}, {}
-    if weather_api:
-        try:
-            dist = haversine_km(start_ll, end_ll); n_samples = min(20, max(5, int(dist / 100)))
-            for i in range(n_samples):
-                t = i / (n_samples - 1) if n_samples > 1 else 0
-                s_lat, s_lon = start_ll[0] + t * (end_ll[0] - start_ll[0]), start_ll[1] + t * (end_ll[1] - start_ll[1])
-                s_coord = (round(s_lat, 2), round(s_lon, 2))
-                if s_coord not in route_conditions: route_conditions[s_coord] = get_cached_weather(weather_api, s_lat, s_lon)
-        except Exception as e: logger.warning(f"Could not fetch route conditions: {e}")
-    openq, visited = [], set(); heappush(openq, (0.0, start))
+    logger.info("Pre-computing cost grid with coastal penalties...")
+    land_cells = {cell for i in range(grid.n_lat) for j in range(grid.n_lon) if is_land(*(cell := (i, j), grid.to_coord(cell))[1])}
+    cost_grid = {}
+    COASTAL_PENALTY = 1000
+    for i in range(grid.n_lat):
+        if i > 0 and i % 10 == 0 and grid.n_lat > 0: logger.info(f"Grid computation progress: {i / grid.n_lat * 100:.0f}%")
+        for j in range(grid.n_lon):
+            cell = (i, j)
+            if cell in land_cells:
+                cost_grid[cell] = float('inf')
+                continue
+            base_penalty = cost_penalty(*grid.to_coord(cell))
+            is_coastal = any(neighbor in land_cells for neighbor in grid.neighbors(cell))
+            cost_grid[cell] = base_penalty + COASTAL_PENALTY if is_coastal else base_penalty
+    logger.info("Cost grid computation complete.")
+    if cost_grid.get(start) == float('inf') or cost_grid.get(goal) == float('inf'):
+        return [], 0.0, {'route_details': []}, None
+    cost_grid[start] = cost_penalty(*start_ll)
+    cost_grid[goal] = cost_penalty(*end_ll)
+    
+    g, parent, openq, visited = {start: 0.0}, {start: None}, [], set()
+    heappush(openq, (0.0, start))
+    path_found = False
+    
     while openq:
         _, current = heappop(openq)
         if current in visited: continue
         visited.add(current)
-        if current == goal: break
+        if current == goal:
+            path_found = True
+            break
         cur_ll = grid.to_coord(current)
         for nb in grid.neighbors(current):
-            nb_ll = grid.to_coord(nb)
-            if is_land(nb_ll[0], nb_ll[1]): continue
-            step_dist = haversine_km(cur_ll, nb_ll); conditions = route_conditions.get((round(nb_ll[0], 2), round(nb_ll[1], 2)))
-            tentative_g = g[current] + step_dist + cost_penalty(*nb_ll, conditions)
+            nb_cost = cost_grid.get(nb, float('inf'))
+            if nb_cost == float('inf'): continue
+            tentative_g = g[current] + haversine_km(cur_ll, grid.to_coord(nb)) + nb_cost
             if nb not in g or tentative_g < g[nb]:
                 g[nb], parent[nb] = tentative_g, current
-                h = haversine_km(nb_ll, end_ll); heappush(openq, (tentative_g + h, nb))
-    if goal not in parent: return [], 0.0, {}
+                heappush(openq, (tentative_g + haversine_km(grid.to_coord(nb), end_ll), nb))
+    if not path_found:
+        return [], 0.0, {'route_details': []}, None
+    
     path_cells, c = [], goal
     while c is not None: path_cells.append(c); c = parent.get(c)
     path_cells.reverse()
     coords = [grid.to_coord(c) for c in path_cells]
+    
+    logger.info(f"Path found with {len(coords)} points. Fetching final conditions & predictions...")
     total_distance, route_details = 0.0, []
     for i, coord in enumerate(coords):
         if i > 0: total_distance += haversine_km(coords[i - 1], coord)
-        conditions = route_conditions.get((round(coord[0], 2), round(coord[1], 2)), {})
+        
+        conditions = get_cached_weather(weather_api, *coord) if weather_api else {}
+        
+        if ml_predictor:
+            features = [
+                conditions.get('wind_speed', 10), conditions.get('wind_direction', 180),
+                conditions.get('wave_height', 2), conditions.get('wave_period', 8),
+                conditions.get('current_speed', 0.5), conditions.get('current_direction', 90),
+                conditions.get('sea_temp', 22), conditions.get('air_temp', 20),
+                conditions.get('pressure', 1013), conditions.get('visibility', 10),
+                180, 12
+            ]
+            prediction = ml_predictor.predict(np.tile(features, (10, 1)))
+            conditions['predicted_speed'] = prediction['speed']
+            conditions['predicted_fuel'] = max(0, prediction['fuel_consumption'])
+
         route_details.append({'lat': coord[0], 'lon': coord[1], 'distance_from_start': total_distance, 'conditions': conditions})
-    return coords, total_distance, {'route_details': route_details}
+
+    voyage_summary = calculate_voyage_summary(route_details, total_distance)
+    
+    return coords, total_distance, {'route_details': route_details}, voyage_summary
 
 # --- Background Monitoring, Initialization, API Endpoints ---
 def monitor_active_routes():
@@ -154,15 +234,14 @@ def monitor_active_routes():
             for route_id in routes_to_update:
                 try:
                     rinfo = active_routes[route_id]; logger.info(f"Re-computing route {route_id}")
-                    # Use the same dynamic logic for monitoring
                     direct_dist = haversine_km(rinfo['start'], rinfo['end'])
                     if direct_dist > 1000: step_deg = 1.0
                     elif direct_dist > 300: step_deg = 0.5
                     else: step_deg = 0.25
                     grid = Grid(rinfo['grid_config']['bounds'], step_deg)
-                    new_path, new_dist, new_details = astar_route_with_conditions(grid, rinfo['start'], rinfo['end'])
+                    new_path, new_dist, new_details, _ = astar_route_with_conditions(grid, rinfo['start'], rinfo['end'])
                     if path_changed_significantly(rinfo['path_history'][-1], new_path):
-                        logger.info(f"Route {route_id} changed significantly - updating"); rinfo['path_history'].append(new_path); rinfo.update({'distance': new_dist, 'details': new_details['route_details'], 'route_updated': True})
+                        logger.info(f"Route {route_id} changed significantly - updating"); rinfo['path_history'].append(new_path); rinfo.update({'distance': new_dist, 'details': new_details.get('route_details', []), 'route_updated': True})
                     else:
                         rinfo['route_updated'] = False
                     rinfo['last_computed'] = datetime.now()
@@ -195,7 +274,6 @@ def create_route():
     data = request.get_json(force=True)
     start, end = data['start'], data['end']
     
-    # DYNAMIC BOUNDING BOX LOGIC
     direct_dist_km = haversine_km(start, end)
     if direct_dist_km > 1000:
         step_deg, padding = 1.0, 10.0
@@ -216,7 +294,7 @@ def create_route():
     
     try:
         grid = Grid(bounds, step_deg)
-        path, dist_km, details = astar_route_with_conditions(grid, start, end)
+        path, dist_km, details, summary = astar_route_with_conditions(grid, start, end)
         
         route_id = f"route_{int(time.time() * 1000)}"
         route_details_data = details.get('route_details', [])
@@ -232,7 +310,8 @@ def create_route():
             'path_history': [path],
             'distance_km': dist_km,
             'route_details': route_details_data,
-            'grid_step_used': step_deg
+            'grid_step_used': step_deg,
+            'voyage_summary': summary
         }), 200
     except Exception as e:
         logger.error(f"Error computing route: {e}", exc_info=True)
@@ -254,8 +333,8 @@ def handle_route(route_id):
         elif direct_dist > 300: step_deg = 0.5
         else: step_deg = 0.25
         grid = Grid(rinfo['grid_config']['bounds'], step_deg)
-        new_path, new_dist, new_details = astar_route_with_conditions(grid, rinfo['start'], rinfo['end'])
-        rinfo['path_history'].append(new_path); rinfo.update({'distance': new_dist, 'details': new_details['route_details'], 'last_computed': datetime.now(), 'route_updated': True})
+        new_path, new_dist, new_details, _ = astar_route_with_conditions(grid, rinfo['start'], rinfo['end'])
+        rinfo['path_history'].append(new_path); rinfo.update({'distance': new_dist, 'details': new_details.get('route_details', []), 'last_computed': datetime.now(), 'route_updated': True})
         return jsonify({'route_id': route_id, 'updated': True, 'path_history': rinfo['path_history'], 'distance_km': new_dist}), 200
 
 @app.route('/weather', methods=['GET'])
@@ -264,17 +343,43 @@ def get_weather():
     if not weather_api: return jsonify({'error': 'Weather API not available'}), 503
     try:
         conditions = get_cached_weather(weather_api, lat, lon)
+        if ml_predictor:
+            features_list = [
+                conditions.get('wind_speed', 10), conditions.get('wind_direction', 180),
+                conditions.get('wave_height', 2), conditions.get('wave_period', 8),
+                conditions.get('current_speed', 0.5), conditions.get('current_direction', 90),
+                conditions.get('sea_temp', 22), conditions.get('air_temp', 20),
+                conditions.get('pressure', 1013), conditions.get('visibility', 10),
+                180, 12
+            ]
+            features_sequence = np.tile(features_list, (10, 1))
+            prediction = ml_predictor.predict(features_sequence)
+            conditions['predicted_speed'] = prediction['speed']
+            conditions['predicted_fuel'] = max(0, prediction['fuel_consumption'])
         if 'timestamp' in conditions and isinstance(conditions['timestamp'], datetime): conditions['timestamp'] = conditions['timestamp'].isoformat()
         return jsonify(conditions)
     except Exception as e: logger.error(f"Error fetching weather: {e}"); return jsonify({'error': str(e)}), 500
+
 @app.route('/predict', methods=['POST'])
 def predict_performance():
     if not ml_predictor: return jsonify({'error': 'ML model not available'}), 503
     try:
         conditions = request.get_json().get('conditions', {})
-        features = np.array([[conditions.get('wind_speed', 10), conditions.get('wind_direction', 180), conditions.get('wave_height', 2), conditions.get('wave_period', 8), conditions.get('current_speed', 0.5), conditions.get('current_direction', 90), conditions.get('sea_temp', 22), conditions.get('air_temp', 20), conditions.get('pressure', 1013), conditions.get('visibility', 10), 180, 12]])
-        return jsonify(ml_predictor.predict(features))
+        features_list = [
+            conditions.get('wind_speed', 10), conditions.get('wind_direction', 180),
+            conditions.get('wave_height', 2), conditions.get('wave_period', 8),
+            conditions.get('current_speed', 0.5), conditions.get('current_direction', 90),
+            conditions.get('sea_temp', 22), conditions.get('air_temp', 20),
+            conditions.get('pressure', 1013), conditions.get('visibility', 10),
+            180, 12
+        ]
+        features_sequence = np.tile(features_list, (10, 1))
+        prediction = ml_predictor.predict(features_sequence)
+        # Add clipping here as well for safety
+        prediction['fuel_consumption'] = max(0, prediction['fuel_consumption'])
+        return jsonify(prediction)
     except Exception as e: logger.error(f"Error making prediction: {e}"); return jsonify({'error': str(e)}), 500
+
 def cleanup_on_exit(): global shutdown_flag; shutdown_flag = True; logger.info("Shutting down background threads.")
 
 if __name__ == '__main__':
@@ -285,4 +390,3 @@ if __name__ == '__main__':
     start_background_monitoring()
     logger.info(f"Backend ready - ML: {ml_initialized}, Weather: {weather_initialized}")
     app.run(host='0.0.0.0', port=5001, debug=False)
-

@@ -1,16 +1,8 @@
 import numpy as np
-import pandas as pd
 import pickle
 import os
-from datetime import datetime, timedelta
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-
+from sklearn.preprocessing import MinMaxScaler
 
 class ShipPerformancePredictor:
     def __init__(self, sequence_length=10, feature_dim=12):
@@ -27,120 +19,123 @@ class ShipPerformancePredictor:
         self.target_columns = ['ship_speed', 'fuel_consumption']
         
     def build_model(self):
-        model = Sequential([
-            LSTM(64, input_shape=(self.sequence_length, self.feature_dim)),
-            Dense(32, activation="relu"),
-            Dense(2, activation="linear")  # [speed, fuel]
+        model = tf.keras.Sequential([
+            tf.keras.layers.Flatten(input_shape=(self.sequence_length, self.feature_dim)),
+            tf.keras.layers.Dense(128, activation='relu'),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Dense(2, activation='linear')
         ])
         model.compile(optimizer="adam", loss="mse")
         self.model = model
         return model
 
     def predict(self, features):
-        # Ensure features is a numpy array
         features = np.array(features)
-        
-        # If the input is 2D (a single sequence), expand it to 3D (batch of 1)
         if features.ndim == 2:
             features = np.expand_dims(features, axis=0)
-            
-        result = self.model.predict(features, verbose=0)[0]
+        
+        # --- START: CORRECTED SCALING LOGIC ---
+        # The model expects data in the same scale it was trained on.
+        # This was the source of the bug.
+        batch_size, seq_len, num_features = features.shape
+        features_reshaped = features.reshape(-1, num_features)
+        
+        # Use the loaded scaler to transform the input data.
+        # Note: We use .transform(), not .fit_transform(), for prediction.
+        scaled_features = self.scaler_features.transform(features_reshaped)
+        scaled_features_reshaped = scaled_features.reshape(batch_size, seq_len, num_features)
+        
+        # Get the scaled prediction from the model.
+        scaled_prediction = self.model.predict(scaled_features_reshaped, verbose=0)
+        
+        # Inverse transform the prediction to get the real-world values.
+        prediction = self.scaler_target.inverse_transform(scaled_prediction)
+        # --- END: CORRECTED SCALING LOGIC ---
+
+        result = prediction[0]
         return {
             "speed": float(result[0]),
             "fuel_consumption": float(result[1])
         }
     
     def save_model(self, filepath='models/ship_performance_model'):
-        """Save trained model and scalers"""
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
-        # Save Keras model
         self.model.save(f"{filepath}.h5")
-        
-        # Save scalers
         with open(f"{filepath}_scalers.pkl", 'wb') as f:
             pickle.dump({
                 'scaler_features': self.scaler_features,
                 'scaler_target': self.scaler_target,
-                'feature_columns': self.feature_columns,
-                'target_columns': self.target_columns,
-                'sequence_length': self.sequence_length
             }, f)
-        
-        print(f"Model saved to {filepath}")
+        print(f"Model and scalers saved to {filepath}")
     
     def load_model(self, filepath='models/ship_performance_model'):
-        """Load trained model and scalers"""
-        # Load Keras model
-        # FIXED: Added compile=False to prevent deserialization errors during inference
         self.model = tf.keras.models.load_model(f"{filepath}.h5", compile=False)
-        
-        # Load scalers (assuming they exist, otherwise handle error)
         scaler_path = f"{filepath}_scalers.pkl"
         if os.path.exists(scaler_path):
             with open(scaler_path, 'rb') as f:
                 data = pickle.load(f)
-                self.scaler_features = data.get('scaler_features', self.scaler_features)
-                self.scaler_target = data.get('scaler_target', self.scaler_target)
-                self.feature_columns = data.get('feature_columns', self.feature_columns)
-                self.target_columns = data.get('target_columns', self.target_columns)
-                self.sequence_length = data.get('sequence_length', self.sequence_length)
-        
-        print(f"Model loaded from {filepath}")
+                self.scaler_features = data['scaler_features']
+                self.scaler_target = data['scaler_target']
+        else:
+             # If scalers don't exist, we must fit them with placeholder data
+             # so the .transform() method doesn't fail.
+             print("Scalers not found. Fitting with placeholder data.")
+             placeholder_features = np.zeros((1, self.feature_dim))
+             placeholder_target = np.zeros((1, len(self.target_columns)))
+             self.scaler_features.fit(placeholder_features)
+             self.scaler_target.fit(placeholder_target)
 
+        print(f"Model and scalers loaded from {filepath}")
+
+# The training function is left for standalone use and is not called by the main app.
 def train_model(weather_api, bounds, step=5):
-    """
-    Train ML model on regional weather/ocean conditions.
-    Uses fetch_region_conditions to gather training samples.
-    """
-    from weather_api import fetch_region_conditions
-
+    from weather_api import fetch_region_conditions 
+    
     predictor = ShipPerformancePredictor()
-    predictor.build_model()
-
-    # 📡 Get weather data grid across region
+    
     print("Fetching regional weather data for training...")
     region_data = fetch_region_conditions(weather_api, bounds, step=step)
     if not region_data:
         print("No weather data fetched. Cannot train model.")
         return None
 
-    X, y = [], []
-
+    features_list, target_list = [], []
     for cond in region_data:
-        features = [
+        features_list.append([
             cond.get("wind_speed", 10), cond.get("wind_direction", 180),
             cond.get("wave_height", 2), cond.get("wave_period", 8),
             cond.get("current_speed", 0.5), cond.get("current_direction", 90),
             cond.get("sea_temp", 22), cond.get("air_temp", 20),
             cond.get("pressure", 1013), cond.get("visibility", 10),
-            180, 12
-        ]
-
-        seq = np.tile(features, (predictor.sequence_length, 1))
-        X.append(seq)
-
+            180, 12 
+        ])
         true_speed = max(5, 15 - 0.1 * cond.get("wind_speed", 0) - 0.5 * cond.get("wave_height", 0))
         true_fuel  = 20 + 0.2 * cond.get("wind_speed", 0) + 0.5 * cond.get("wave_height", 0)
-        y.append([true_speed, true_fuel])
+        target_list.append([true_speed, true_fuel])
 
+    # Fit scalers on the full dataset and then transform
+    scaled_features = predictor.scaler_features.fit_transform(features_list)
+    scaled_targets = predictor.scaler_target.fit_transform(target_list)
+
+    X, y = [], []
+    for i in range(len(scaled_features)):
+        seq = np.tile(scaled_features[i], (predictor.sequence_length, 1))
+        X.append(seq)
+        y.append(scaled_targets[i])
+        
     X = np.array(X)
     y = np.array(y)
-
+    
     print(f"Training dataset built: {X.shape[0]} samples")
-
-    predictor.model.fit(X, y, epochs=5, verbose=1)
-
-    os.makedirs("models", exist_ok=True)
-    # Save using the instance method which also saves scalers
-    predictor.save_model("models/ship_performance_model")
-
+    predictor.build_model()
+    predictor.model.fit(X, y, epochs=10, batch_size=32, verbose=1)
+    predictor.save_model()
     return predictor
 
 if __name__ == "__main__":
     from weather_api import WeatherOceanAPI
 
-    api = WeatherOceanAPI(openweather_api_key="81da745c6171d7297c8d6943dd0d240e")
+    api = WeatherOceanAPI(openweather_api_key="778c1921fa85a34adbe226e280cbf4e6")
     bounds = {"lat_min": -40, "lat_max": 30, "lon_min": 20, "lon_max": 120}
     predictor = train_model(api, bounds, step=5)
     if predictor:
