@@ -1,7 +1,10 @@
 import React, { useEffect } from 'react';
-import { MapContainer, TileLayer, Polyline, Marker, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, Marker, Tooltip, useMap, useMapEvents, LayersControl } from 'react-leaflet';
 import L from 'leaflet';
 import { indianPorts } from './ports';
+
+// Destructure LayersControl components
+const { BaseLayer, Overlay } = LayersControl;
 
 // --- Helper component to resize the map ---
 function MapResizer({ isPanelOpen }) {
@@ -46,7 +49,9 @@ const waypointIcon = new L.divIcon({
 
 // --- MapView Component ---
 export default function MapView({ start, end, setStart, setEnd, pathHistory, isPanelOpen }) {
-  const windLayer = `https://tile.openweathermap.org/map/wind/{z}/{x}/{y}.png?appid=d84726c9fdd20ad8ea1528c84e0def03`;
+  const apiKey = "778c1921fa85a34adbe226e280cbf4e6";
+  const windLayer = `https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${apiKey}`;
+  const cloudLayer = `https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${apiKey}`;
 
   const currentPath = pathHistory.length > 0 ? pathHistory[pathHistory.length - 1] : [];
   
@@ -65,8 +70,20 @@ export default function MapView({ start, end, setStart, setEnd, pathHistory, isP
     >
       <MapResizer isPanelOpen={isPanelOpen} />
 
-      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      <TileLayer url={windLayer} opacity={0.5} />
+      <LayersControl position="topright">
+        <BaseLayer checked name="OpenStreetMap">
+          <TileLayer
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          />
+        </BaseLayer>
+        <Overlay checked name="Wind">
+          <TileLayer url={windLayer} opacity={0.4} />
+        </Overlay>
+        <Overlay name="Clouds">
+          <TileLayer url={cloudLayer} opacity={0.7} />
+        </Overlay>
+      </LayersControl>
 
       <ClickToSet onSet={handlePointSelect} />
 
@@ -95,8 +112,6 @@ export default function MapView({ start, end, setStart, setEnd, pathHistory, isP
           
           {currentPath.length > 0 && (
             <Polyline 
-              // --- THIS IS THE FIX ---
-              // The path now correctly includes the start and end points.
               positions={[start, ...currentPath, end]}
               pathOptions={{ color: "#28a745", weight: 5 }} 
             />

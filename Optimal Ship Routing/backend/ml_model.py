@@ -3,6 +3,8 @@ import pickle
 import os
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
+from tensorflow import Keras
+from tensorflow import LSTM, Sequential, Dense, Dropout
 
 class ShipPerformancePredictor:
     def __init__(self, sequence_length=10, feature_dim=12):
